@@ -35,3 +35,9 @@
 - Asked: Add a button that saves the inputs, diagrams, and checks as a PDF calculation sheet.
 - Changed: Added a self-contained vector PDF export, documented the feature in the spec, and aligned diagram peak markers with the plotted values.
 - Worked: PDF generation passed checks for the expected calculation content, document structure, long load lists, invalid inputs, and cancellation. The PDF was not visually inspected in a PDF viewer.
+
+## 2026-11-24
+
+- Asked: Write a short README describing the app, required packages, and the command to start it.
+- Changed: Added `README.md` with the app's purpose, Python and Tkinter requirements, and launch command.
+- Worked: Yes. Confirmed the requirements and command against the app's imports and entry point.
