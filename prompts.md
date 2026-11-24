@@ -23,3 +23,9 @@
 - Asked: Add File menu Save and Open for beam designs, and remove saving designs from the spec's out-of-scope section first.
 - Changed: Added save and open requirements to the spec (saving was already absent from out of scope), and implemented JSON save and open with validation and recalculation in the Tkinter app.
 - Worked: Yes. Checked a Tkinter save/open round trip with both load types, recalculation, invalid and malformed files, and cancellation.
+
+## 2026-11-24
+
+- Asked: Add a button to export a table of x, V, M, and deflection along the beam to an Excel-compatible CSV file.
+- Changed: Added a CSV export button, sampling positions along the beam and including load events, extrema, and both sides of shear jumps; updated the spec.
+- Worked: Yes. Checked the exported midpoint moment and deflection, shear jump values, recalculation after edits, invalid inputs, cancellation, and UTF-8 Excel compatibility.

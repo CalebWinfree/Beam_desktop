@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import json
+import csv
 import os
 import tempfile
 import tkinter as tk
@@ -273,6 +274,27 @@ def solve(inputs: dict) -> dict:
                 deflection_ratio=deflection_ratio)
 
 
+def export_rows(inputs: dict, results: dict):
+    """Sample total-load results and retain both sides of shear jumps."""
+    model = results["model"]
+    span = inputs["span"]
+    positions = {span * (i / 100) for i in range(101)}
+    positions.update(events(model))
+    positions.update(results[key][0] for key in ("shear", "moment", "total_deflection", "live_deflection"))
+    for x in sorted(positions):
+        before = shear_at(x, "before", model)
+        after = shear_at(x, "after", model)
+        moment = moment_at(x, model)
+        deflection = results["total_def"](x)
+        if not all(math.isfinite(value) for value in (x, before, after, moment, deflection)):
+            raise ValueError("The results exceed the calculator's numeric range.")
+        if before != after:
+            yield (x, "before", before, moment, deflection)
+            yield (x, "after", after, moment, deflection)
+        else:
+            yield (x, "", after, moment, deflection)
+
+
 def design_document(inputs: dict) -> dict:
     """Convert validated app inputs into a portable JSON document."""
     loads = []
@@ -497,6 +519,7 @@ class BeamDesigner(tk.Tk):
         status = ttk.Frame(parent)
         status.pack(fill="x", pady=(0, 6))
         ttk.Label(status, text="Analysis results", style="Title.TLabel").pack(side="left")
+        ttk.Button(status, text="Export results to CSV", command=self.export_results).pack(side="right", padx=(10, 0))
         ttk.Label(status, textvariable=self.status_var, style="Sub.TLabel").pack(side="right")
         self.error_var = tk.StringVar()
         ttk.Label(parent, textvariable=self.error_var, foreground="#b74343", wraplength=850).pack(fill="x", pady=(0, 6))
@@ -699,7 +722,7 @@ class BeamDesigner(tk.Tk):
                     include_self_weight=self.self_weight_var.get(), allowable=allowable,
                     divisor=divisor, has_live=any(l.load_class == "live" and l.magnitude > 0 for l in loads))
 
-    def calculate(self) -> None:
+    def calculate(self) -> bool:
         self.error_var.set("")
         try:
             inputs = self.read_inputs()
@@ -707,13 +730,44 @@ class BeamDesigner(tk.Tk):
         except (ValueError, OverflowError, ZeroDivisionError) as exc:
             self.error_var.set(str(exc))
             self.status_var.set("Analysis not updated")
-            return
+            return False
         self.last_inputs, self.last_results = inputs, results
         self.has_calculated = True
         self.status_var.set("Results updated")
         self._update_summary(inputs, results)
         for plot in (self.beam_plot, self.shear_plot, self.moment_plot, self.deflection_plot):
             plot.redraw()
+        return True
+
+    def export_results(self) -> None:
+        if not self.calculate():
+            messagebox.showerror("Cannot export results", self.error_var.get(), parent=self)
+            return
+        path = filedialog.asksaveasfilename(parent=self, title="Export beam results",
+                                           defaultextension=".csv",
+                                           filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
+        if not path:
+            return
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8-sig", newline="",
+                                             dir=os.path.dirname(os.path.abspath(path)),
+                                             prefix=".beam-", suffix=".tmp", delete=False) as handle:
+                temporary = handle.name
+                writer = csv.writer(handle)
+                writer.writerow(["x (ft)", "Side at shear jump", "V (kip)", "M (kip-ft)",
+                                 "Total deflection, downward positive (in)"])
+                writer.writerows(export_rows(self.last_inputs, self.last_results))
+            os.replace(temporary, path)
+            temporary = None
+        except (OSError, ValueError, OverflowError, ZeroDivisionError) as exc:
+            messagebox.showerror("Cannot export results", str(exc), parent=self)
+        finally:
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
 
     def _update_summary(self, inputs: dict, result: dict) -> None:
         model = result["model"]
