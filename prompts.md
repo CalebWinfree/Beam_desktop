@@ -11,3 +11,9 @@
 - Asked: Read `spec.md` and build the desktop app it describes, using `index.html` as a behavior reference.
 - Changed: Added the Tkinter beam calculator in `beam_designer.py`, embedded the catalog with AISC v15.0 provenance in `01_data/beam-catalog-source.md`, and implemented beam/load inputs, analysis, checks, and Canvas diagrams.
 - Worked: Implementation is complete; the app was not launched in this turn.
+
+## 2026-11-24
+
+- Asked: Run all validation cases in `spec.md` against the app calculations and compare expected with actual values.
+- Changed: Ran the three cases through `beam_designer.solve()`; appended this request to the log.
+- Worked: Yes. Reactions and moments matched, and calculated deflections matched the spec approximations within rounding.
