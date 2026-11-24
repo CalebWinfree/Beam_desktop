@@ -29,3 +29,9 @@
 - Asked: Add a button to export a table of x, V, M, and deflection along the beam to an Excel-compatible CSV file.
 - Changed: Added a CSV export button, sampling positions along the beam and including load events, extrema, and both sides of shear jumps; updated the spec.
 - Worked: Yes. Checked the exported midpoint moment and deflection, shear jump values, recalculation after edits, invalid inputs, cancellation, and UTF-8 Excel compatibility.
+
+## 2026-11-24
+
+- Asked: Add a button that saves the inputs, diagrams, and checks as a PDF calculation sheet.
+- Changed: Added a self-contained vector PDF export, documented the feature in the spec, and aligned diagram peak markers with the plotted values.
+- Worked: PDF generation passed checks for the expected calculation content, document structure, long load lists, invalid inputs, and cancellation. The PDF was not visually inspected in a PDF viewer.

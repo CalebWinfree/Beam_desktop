@@ -7,6 +7,7 @@ import json
 import csv
 import os
 import tempfile
+import textwrap
 import tkinter as tk
 from dataclasses import dataclass
 from tkinter import filedialog, messagebox, ttk
@@ -373,6 +374,127 @@ def read_design(document: object) -> dict:
     return inputs
 
 
+def pdf_text(text: str) -> str:
+    """Escape text for a PDF literal string in Windows ANSI encoding."""
+    data = text.encode("cp1252", errors="replace")
+    return "".join(f"\\{byte:03o}" if byte < 32 or byte >= 127 else
+                   "\\" + chr(byte) if byte in (40, 41, 92) else chr(byte) for byte in data)
+
+
+class PdfCanvas:
+    """Small vector drawing adapter for the existing Tkinter diagram painters."""
+
+    def __init__(self, commands: list[str], left: float, top: float, scale: float):
+        self.commands, self.left, self.top, self.scale = commands, left, top, scale
+
+    def winfo_width(self):
+        return 760
+
+    def winfo_height(self):
+        return 190
+
+    def xy(self, x, y):
+        return self.left + x * self.scale, self.top - y * self.scale
+
+    @staticmethod
+    def color(value):
+        if value == "white":
+            return "1 1 1"
+        if value == "black" or not value:
+            return "0 0 0"
+        if isinstance(value, str) and len(value) == 7 and value.startswith("#"):
+            return " ".join(f"{int(value[i:i+2], 16) / 255:.3f}" for i in (1, 3, 5))
+        return "0 0 0"
+
+    def create_line(self, *coords, **kwargs):
+        points = [self.xy(coords[i], coords[i + 1]) for i in range(0, len(coords), 2)]
+        dash = kwargs.get("dash", ())
+        dash_cmd = "[" + " ".join(str(v * self.scale) for v in dash) + "] 0 d" if dash else "[] 0 d"
+        path = f"{points[0][0]:.3f} {points[0][1]:.3f} m " + " ".join(
+            f"{x:.3f} {y:.3f} l" for x, y in points[1:])
+        color = self.color(kwargs.get("fill"))
+        self.commands.append(f"q {color} RG {kwargs.get('width', 1) * self.scale:.3f} w {dash_cmd} {path} S Q")
+        if kwargs.get("arrow") in ("last", "both"):
+            self._arrow(points[-2], points[-1], color)
+        if kwargs.get("arrow") in ("first", "both"):
+            self._arrow(points[1], points[0], color)
+
+    def _arrow(self, start, end, color):
+        dx, dy = end[0] - start[0], end[1] - start[1]
+        length = math.hypot(dx, dy)
+        if not length:
+            return
+        ux, uy = dx / length, dy / length
+        size = 7 * self.scale
+        x, y = end
+        self.commands.append(f"q {color} rg {x:.3f} {y:.3f} m "
+                             f"{x - size * ux - size * .4 * uy:.3f} {y - size * uy + size * .4 * ux:.3f} l "
+                             f"{x - size * ux + size * .4 * uy:.3f} {y - size * uy - size * .4 * ux:.3f} l h f Q")
+
+    def create_polygon(self, *coords, **kwargs):
+        points = [self.xy(coords[i], coords[i + 1]) for i in range(0, len(coords), 2)]
+        path = f"{points[0][0]:.3f} {points[0][1]:.3f} m " + " ".join(f"{x:.3f} {y:.3f} l" for x, y in points[1:])
+        self.commands.append(f"q {self.color(kwargs.get('fill'))} rg {self.color(kwargs.get('outline'))} RG {path} h B Q")
+
+    def create_rectangle(self, x1, y1, x2, y2, **kwargs):
+        self.create_polygon(x1, y1, x2, y1, x2, y2, x1, y2, **kwargs)
+
+    def create_oval(self, x1, y1, x2, y2, **kwargs):
+        cx, cy = self.xy((x1 + x2) / 2, (y1 + y2) / 2)
+        rx, ry = abs(x2 - x1) * self.scale / 2, abs(y2 - y1) * self.scale / 2
+        k = .55228475
+        self.commands.append(f"q {self.color(kwargs.get('fill'))} rg {self.color(kwargs.get('outline'))} RG "
+            f"{cx + rx:.3f} {cy:.3f} m {cx + rx:.3f} {cy + k*ry:.3f} {cx + k*rx:.3f} {cy + ry:.3f} {cx:.3f} {cy + ry:.3f} c "
+            f"{cx - k*rx:.3f} {cy + ry:.3f} {cx-rx:.3f} {cy+k*ry:.3f} {cx-rx:.3f} {cy:.3f} c "
+            f"{cx-rx:.3f} {cy-k*ry:.3f} {cx-k*rx:.3f} {cy-ry:.3f} {cx:.3f} {cy-ry:.3f} c "
+            f"{cx+k*rx:.3f} {cy-ry:.3f} {cx+rx:.3f} {cy-k*ry:.3f} {cx+rx:.3f} {cy:.3f} c B Q")
+
+    def create_text(self, x, y, **kwargs):
+        text = str(kwargs.get("text", ""))
+        font = kwargs.get("font", ("", 9))
+        size = float(font[1]) * self.scale * 1.25
+        bold = len(font) > 2 and font[2] == "bold"
+        px, py = self.xy(x, y)
+        anchor = kwargs.get("anchor", "center")
+        width = len(text) * size * .50
+        if anchor in ("center", "n", "s"):
+            px -= width / 2
+        elif "e" in anchor:
+            px -= width
+        if anchor in ("center", "w", "e"):
+            py -= size * .35
+        elif "n" in anchor:
+            py -= size
+        self.commands.append(f"q {self.color(kwargs.get('fill'))} rg BT /{'F2' if bold else 'F1'} {size:.3f} Tf "
+                             f"1 0 0 1 {px:.3f} {py:.3f} Tm ({pdf_text(text)}) Tj ET Q")
+
+
+def write_pdf(handle, pages: list[list[str]]) -> None:
+    """Write letter-sized vector pages using the built-in PDF fonts."""
+    objects = [b"", b"", b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+               b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>"]
+    page_ids = []
+    for commands in pages:
+        content = "\n".join(commands).encode("ascii")
+        stream_id = len(objects) + 1
+        objects.append(b"<< /Length " + str(len(content)).encode() + b" >>\nstream\n" + content + b"\nendstream")
+        page_id = len(objects) + 1
+        page_ids.append(page_id)
+        objects.append(f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents {stream_id} 0 R >>".encode())
+    objects[0] = b"<< /Type /Catalog /Pages 2 0 R >>"
+    objects[1] = f"<< /Type /Pages /Count {len(page_ids)} /Kids [{' '.join(f'{i} 0 R' for i in page_ids)}] >>".encode()
+    handle.write(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    offsets = [0]
+    for index, obj in enumerate(objects, 1):
+        offsets.append(handle.tell())
+        handle.write(f"{index} 0 obj\n".encode() + obj + b"\nendobj\n")
+    xref = handle.tell()
+    handle.write(f"xref\n0 {len(offsets)}\n0000000000 65535 f \n".encode())
+    for offset in offsets[1:]:
+        handle.write(f"{offset:010} 00000 n \n".encode())
+    handle.write(f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
+
+
 class ScrollFrame(ttk.Frame):
     """A vertically scrollable ttk content frame."""
 
@@ -520,6 +642,7 @@ class BeamDesigner(tk.Tk):
         status.pack(fill="x", pady=(0, 6))
         ttk.Label(status, text="Analysis results", style="Title.TLabel").pack(side="left")
         ttk.Button(status, text="Export results to CSV", command=self.export_results).pack(side="right", padx=(10, 0))
+        ttk.Button(status, text="Save calculation sheet (PDF)", command=self.export_calculation_sheet).pack(side="right", padx=(10, 0))
         ttk.Label(status, textvariable=self.status_var, style="Sub.TLabel").pack(side="right")
         self.error_var = tk.StringVar()
         ttk.Label(parent, textvariable=self.error_var, foreground="#b74343", wraplength=850).pack(fill="x", pady=(0, 6))
@@ -769,6 +892,96 @@ class BeamDesigner(tk.Tk):
                 except OSError:
                     pass
 
+    def calculation_sheet_pages(self) -> list[list[str]]:
+        inputs, results = self.last_inputs, self.last_results
+        pages: list[list[str]] = []
+        page: list[str] = []
+        y = 0.0
+
+        def new_page(title: str) -> None:
+            nonlocal page, y
+            page = []
+            pages.append(page)
+            y = 750
+            text(title, 16, True)
+            text("Educational / preliminary screening; not a code-compliant design.", 9)
+            y -= 8
+
+        def text(line: str, size: float = 10, bold: bool = False) -> None:
+            nonlocal y
+            if y < 55:
+                new_page("Beam Designer - Calculation sheet (continued)")
+            page.append(f"BT /{'F2' if bold else 'F1'} {size:.1f} Tf 1 0 0 1 42 {y:.1f} Tm ({pdf_text(line)}) Tj ET")
+            y -= size + 5
+
+        def wrapped(line: str) -> None:
+            for part in textwrap.wrap(line, width=100, break_long_words=False, break_on_hyphens=False) or [""]:
+                text(part)
+
+        new_page("Beam Designer - Calculation sheet")
+        text("Inputs", 12, True)
+        text(f"Support: {'Simply supported' if inputs['support'] == 'simple' else 'Cantilever'}    Span: {inputs['span']:.12g} ft")
+        text(f"Section: {inputs['shape_name']}    Ix: {inputs['shape']['ix']:g} in^4    Sx: {inputs['shape']['sx']:g} in^3    E: {E_KSI:g} ksi")
+        text(f"Self-weight: {'On' if inputs['include_self_weight'] else 'Off'} ({inputs['shape']['weight']:g} lb/ft)")
+        text(f"Allowable bending stress Fb: {fmt(inputs['allowable'], 3) + ' ksi' if inputs['allowable'] is not None else 'Not entered'}")
+        text(f"Live-load deflection limit: L/{inputs['divisor']:.12g}")
+        text("Applied loads", 11, True)
+        if not inputs["loads"]:
+            text("No applied loads.")
+        for i, load in enumerate(inputs["loads"], 1):
+            if load.kind == "point":
+                line = f"{i}. {load.load_class.title()} point load: {load.magnitude:.12g} kip at {load.position:.12g} ft from left"
+            else:
+                line = f"{i}. {load.load_class.title()} uniform load: {load.magnitude:.12g} kip/ft from {load.start:.12g} to {load.end:.12g} ft"
+            wrapped(line)
+        y -= 6
+        text("Results and checks", 12, True)
+        for label, var in self.summary_vars.items():
+            wrapped(f"{label}: {var.get()}")
+        wrapped("Bending stress is preliminary; bracing, buckling, and design load combinations are not checked. The deflection limit is user-selected.")
+
+        new_page("Beam Designer - Diagrams")
+        scale = 528 / 760
+        for kind in ("beam", "shear", "moment", "deflection"):
+            if y - 190 * scale < 45:
+                new_page("Beam Designer - Diagrams (continued)")
+            canvas = PdfCanvas(page, 42, y, scale)
+            if kind == "beam":
+                self._paint_beam(canvas)
+            else:
+                self._paint_chart(canvas, kind)
+            y -= 190 * scale + 13
+        for index, commands in enumerate(pages, 1):
+            commands.append(f"BT /F1 8 Tf 1 0 0 1 42 25 Tm (Beam Designer - Page {index} of {len(pages)}) Tj ET")
+        return pages
+
+    def export_calculation_sheet(self) -> None:
+        if not self.calculate():
+            messagebox.showerror("Cannot save calculation sheet", self.error_var.get(), parent=self)
+            return
+        path = filedialog.asksaveasfilename(parent=self, title="Save calculation sheet",
+                                           defaultextension=".pdf",
+                                           filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")])
+        if not path:
+            return
+        temporary = None
+        try:
+            pages = self.calculation_sheet_pages()
+            with tempfile.NamedTemporaryFile(mode="w+b", dir=os.path.dirname(os.path.abspath(path)),
+                                             prefix=".beam-", suffix=".tmp", delete=False) as handle:
+                temporary = handle.name
+                write_pdf(handle, pages)
+            os.replace(temporary, path)
+            temporary = None
+        except (OSError, ValueError, OverflowError, ZeroDivisionError) as exc:
+            messagebox.showerror("Cannot save calculation sheet", str(exc), parent=self)
+        finally:
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
+
     def _update_summary(self, inputs: dict, result: dict) -> None:
         model = result["model"]
         if inputs["support"] == "simple":
@@ -876,7 +1089,7 @@ class BeamDesigner(tk.Tk):
         c.create_text(right, bottom + 15, text=f"{fmt(span)} ft", fill="#64728a", anchor="e", font=("Segoe UI", 8))
 
     def _paint_chart(self, c: tk.Canvas, kind: str) -> None:
-        title = {"shear": "Total-load shear", "moment": "Total-load moment", "deflection": "Total and live-load deflection"}[kind]
+        title = {"shear": "Total-load shear (kip)", "moment": "Total-load moment (kip-ft)", "deflection": "Total and live-load deflection (in)"}[kind]
         left, right, top, bottom = self._base_axes(c, title)
         inputs, result = self.last_inputs, self.last_results
         if not inputs or not result:
@@ -897,27 +1110,29 @@ class BeamDesigner(tk.Tk):
                     x = a + (b - a) * j / 12
                     pts.append((x, shear_at(x, "before", model)))
                 pts.extend([(b, shear_at(b, "before", model)), (b, shear_at(b, "after", model))])
-            self._draw_series(c, pts, left, right, top, bottom, color="#2e69b3", x_map=px, scale_hint=max((abs(v) for _, v in pts), default=0))
+            hint = max((abs(v) for _, v in pts), default=0)
+            self._draw_series(c, pts, left, right, top, bottom, color="#2e69b3", x_map=px, scale_hint=hint)
             x, v = result["shear"]
-            self._peak_label(c, px(x), v, fmt(abs(v), 3) + " kip")
+            self._peak_label(c, px(x), v, fmt(abs(v), 3) + " kip", hint)
         elif kind == "moment":
             model = result["model"]
             pts = self._sample(lambda x: moment_at(x, model), events(model), span)
-            self._draw_series(c, pts, left, right, top, bottom, color="#2e69b3", x_map=px, scale_hint=max((abs(v) for _, v in pts), default=0), positive_down=True)
             x, v = result["moment"]
-            self._peak_label(c, px(x), v, fmt(abs(v), 3) + " kip-ft", positive_down=True)
+            hint = max(abs(v), max((abs(value) for _, value in pts), default=0))
+            self._draw_series(c, pts, left, right, top, bottom, color="#2e69b3", x_map=px, scale_hint=hint, positive_down=True)
+            self._peak_label(c, px(x), v, fmt(abs(v), 3) + " kip-ft", hint, positive_down=True)
         else:
             total = result["total_def_model"]
             live = result["live_def_model"]
             ev = sorted(set(events(total) + events(live)))
             tpts = self._sample(result["total_def"], ev, span)
             lpts = self._sample(result["live_def"], ev, span)
-            hint = max([abs(v) for _, v in tpts + lpts] or [0])
+            hint = max([abs(v) for _, v in tpts + lpts] + [abs(result['total_deflection'][1]), abs(result['live_deflection'][1])])
             self._draw_series(c, tpts, left, right, top, bottom, color="#2e69b3", x_map=px, scale_hint=hint, positive_down=True)
             self._draw_series(c, lpts, left, right, top, bottom, color="#e28a3b", x_map=px, scale_hint=hint, dash=(5, 3), positive_down=True)
-            self._peak_label(c, px(result["total_deflection"][0]), result["total_deflection"][1], "Total", positive_down=True)
+            self._peak_label(c, px(result["total_deflection"][0]), result["total_deflection"][1], "Total", hint, positive_down=True)
             if inputs["has_live"]:
-                self._peak_label(c, px(result["live_deflection"][0]), result["live_deflection"][1], "Live", color="#b96c22", positive_down=True)
+                self._peak_label(c, px(result["live_deflection"][0]), result["live_deflection"][1], "Live", hint, color="#b96c22", positive_down=True)
             c.create_line(right - 120, top + 8, right - 98, top + 8, fill="#2e69b3", width=2)
             c.create_text(right - 93, top + 8, text="Total", anchor="w", fill="#64728a", font=("Segoe UI", 8))
             c.create_line(right - 52, top + 8, right - 30, top + 8, fill="#e28a3b", width=2, dash=(5, 3))
@@ -954,11 +1169,12 @@ class BeamDesigner(tk.Tk):
             c.create_line(*coords, fill=color, width=2, dash=dash, smooth=False)
 
     @staticmethod
-    def _peak_label(c: tk.Canvas, x: float, value: float, text: str, color: str = "#18345b",
+    def _peak_label(c: tk.Canvas, x: float, value: float, text: str, scale_hint: float, color: str = "#18345b",
                     positive_down: bool = False) -> None:
         center = (23 + c.winfo_height() - 30) / 2
         positive_direction = 1 if positive_down else -1
-        y = center + positive_direction * (1 if value >= 0 else -1) * min(42, c.winfo_height() * 0.22)
+        amplitude = (c.winfo_height() - 30 - 23) * .40
+        y = center + positive_direction * value / max(scale_hint, 1e-12) * amplitude
         c.create_oval(x - 3, y - 3, x + 3, y + 3, fill=color, outline="white")
         c.create_text(x + 5, y - 9, text=text, anchor="sw", fill=color, font=("Segoe UI", 8, "bold"))
 

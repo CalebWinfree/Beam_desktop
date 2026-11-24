@@ -56,6 +56,7 @@ Create a single-file Python desktop app using Tkinter that displays shear, momen
 - Clearly indicate the selected section, units, self-weight setting, and any missing input needed for a check.
 - Use standard Tkinter controls for load entry and results. Provide clear validation feedback in the window, keep the layout usable when resized, and load a valid example beam when the app opens.
 - Provide an Export results button that calculates the current inputs and saves an Excel-compatible CSV table of position `x` (ft), total-load shear `V` (kip), moment `M` (kip-ft), and downward-positive total-load deflection (in). Include evenly spaced positions, load-event positions and calculated extrema. At shear jumps, export the values immediately before and after the event, identified by a side column.
+- Provide a calculation sheet button that recalculates the current inputs and saves a PDF with the inputs and loads first, followed by the reactions, peaks, checks, and beam, shear, moment, and deflection diagrams. Identify the calculations as preliminary and educational.
 
 ## Validation
 
