@@ -17,3 +17,9 @@
 - Asked: Run all validation cases in `spec.md` against the app calculations and compare expected with actual values.
 - Changed: Ran the three cases through `beam_designer.solve()`; appended this request to the log.
 - Worked: Yes. Reactions and moments matched, and calculated deflections matched the spec approximations within rounding.
+
+## 2026-11-24
+
+- Asked: Add File menu Save and Open for beam designs, and remove saving designs from the spec's out-of-scope section first.
+- Changed: Added save and open requirements to the spec (saving was already absent from out of scope), and implemented JSON save and open with validation and recalculation in the Tkinter app.
+- Worked: Yes. Checked a Tkinter save/open round trip with both load types, recalculation, invalid and malformed files, and cancellation.

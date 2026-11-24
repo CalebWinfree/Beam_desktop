@@ -30,6 +30,12 @@ Create a single-file Python desktop app using Tkinter that displays shear, momen
 - Treat applied point loads and distributed loads as downward-positive magnitudes; support reactions act upward. A point load may be at either endpoint or in the span. Require a distributed-load start `a` and end `b` with `0 <= a < b <= L`.
 - Validate that spans and loads are finite, spans are positive, load positions are within the span, and distributed-load end positions exceed start positions. If `Fb` is entered, require a finite positive value; require the deflection divisor `n` to be finite and positive. Do not silently ignore invalid or unsupported input.
 
+## Save and open
+
+- Provide a File menu with Save and Open commands to store and restore a beam design locally.
+- Preserve the support type, span, section, self-weight setting, allowable bending stress, deflection-limit divisor, and all applied loads with their type, magnitude, positions, and dead or live classification.
+- Validate a design before saving or opening it, show an informative error if a file cannot be used, and recalculate after a successful open.
+
 ## Calculations and checks
 
 - **Symbols:** `L` is the beam span; `x` is distance from the left end; `P` is a downward point-load magnitude; `w` is downward uniform-load intensity in kip/ft; `a` and `b` are its start and end positions; `R` is a support reaction in kips; `Mfix` is a cantilever's fixed-end reaction moment in kip-ft; `V(x)` is internal shear in kips; `M(x)` is internal bending moment (kip-ft in statics, kip-in in the deflection equation); `Mmax` is maximum absolute moment in kip-ft; `v(x)` is downward-positive deflection in inches; `v_live(x)` is deflection due to live loads only; `delta_allow` is the allowable deflection in inches; `fb` is calculated bending stress in ksi; `Fb` is user-entered allowable bending stress in ksi; `n` is the deflection-limit divisor; `DCRb` and `DCRd` are dimensionless bending and deflection ratios. Use feet for `L`, `x`, `a`, and `b` in input and statics calculations, and inches for beam-deflection calculations.

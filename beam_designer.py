@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import math
+import json
+import os
+import tempfile
 import tkinter as tk
 from dataclasses import dataclass
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 from typing import Callable
 
 E_KSI = 29_000.0
@@ -270,6 +273,84 @@ def solve(inputs: dict) -> dict:
                 deflection_ratio=deflection_ratio)
 
 
+def design_document(inputs: dict) -> dict:
+    """Convert validated app inputs into a portable JSON document."""
+    loads = []
+    for load in inputs["loads"]:
+        item = dict(kind=load.kind, magnitude=load.magnitude, load_class=load.load_class)
+        if load.kind == "point":
+            item["position"] = load.position
+        else:
+            item.update(start=load.start, end=load.end)
+        loads.append(item)
+    return dict(version=1, support=inputs["support"], span=inputs["span"],
+                section=inputs["shape_name"], self_weight=inputs["include_self_weight"],
+                allowable=inputs["allowable"], deflection_divisor=inputs["divisor"], loads=loads)
+
+
+def read_design(document: object) -> dict:
+    """Validate a saved design completely before applying it to the window."""
+    if not isinstance(document, dict) or type(document.get("version")) is not int or document["version"] != 1:
+        raise ValueError("Unsupported or missing design file version.")
+
+    def number(value: object, label: str, *, positive: bool = False, nonnegative: bool = False) -> float:
+        if type(value) not in (int, float):
+            raise ValueError(f"{label} must be a finite number.")
+        try:
+            parsed = parse_number(str(value), label, positive=positive, nonnegative=nonnegative)
+        except (OverflowError, ValueError) as exc:
+            raise ValueError(f"Invalid {label.lower()}: {exc}") from exc
+        assert parsed is not None
+        return parsed
+
+    support = document.get("support")
+    section = document.get("section")
+    if support not in ("simple", "cantilever"):
+        raise ValueError("The file has an unsupported support condition.")
+    if not isinstance(section, str) or section not in SHAPES:
+        raise ValueError("The file has an unsupported W-shape.")
+    if type(document.get("self_weight")) is not bool:
+        raise ValueError("The file must specify the self-weight setting.")
+    if "allowable" not in document:
+        raise ValueError("The file must specify the allowable bending stress setting.")
+    span = number(document.get("span"), "Span", positive=True)
+    divisor = number(document.get("deflection_divisor"), "Deflection-limit divisor", positive=True)
+    allowable_value = document.get("allowable")
+    allowable = None if allowable_value is None else number(allowable_value, "Allowable bending stress", positive=True)
+    rows = document.get("loads")
+    if not isinstance(rows, list):
+        raise ValueError("The file must contain a list of loads.")
+    loads = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("Each load must be an object.")
+        kind, category = row.get("kind"), row.get("load_class")
+        if kind not in ("point", "udl") or category not in ("dead", "live"):
+            raise ValueError("The file contains an unsupported load type or category.")
+        magnitude = number(row.get("magnitude"), "Load magnitude", nonnegative=True)
+        if kind == "point":
+            position = number(row.get("position"), "Point-load position", nonnegative=True)
+            if position > span:
+                raise ValueError("Point-load positions must be within the beam span.")
+            loads.append(Load(kind, magnitude, category, position=position))
+        else:
+            start = number(row.get("start"), "Uniform-load start", nonnegative=True)
+            end = number(row.get("end"), "Uniform-load end", nonnegative=True)
+            if not start < end <= span:
+                raise ValueError("Uniform loads must have 0 <= start < end <= span.")
+            loads.append(Load(kind, magnitude, category, start=start, end=end))
+    shape = SHAPES[section]
+    analysis_loads = list(loads)
+    if document["self_weight"]:
+        analysis_loads.append(Load("udl", shape["weight"] / 1000, "dead", start=0, end=span, self_weight=True))
+    inputs = dict(support=support, span=span, shape=shape, shape_name=section, loads=loads,
+                  analysis_loads=analysis_loads, include_self_weight=document["self_weight"],
+                  allowable=allowable, divisor=divisor,
+                  has_live=any(load.load_class == "live" and load.magnitude > 0 for load in loads))
+    solve(inputs)
+    return inputs
+
+
 class ScrollFrame(ttk.Frame):
     """A vertically scrollable ttk content frame."""
 
@@ -335,6 +416,12 @@ class BeamDesigner(tk.Tk):
         style.configure("TLabelframe.Label", background="#f3f6fa", foreground="#18345b", font=("Segoe UI", 10, "bold"))
 
     def _build(self) -> None:
+        menu = tk.Menu(self)
+        file_menu = tk.Menu(menu, tearoff=False)
+        file_menu.add_command(label="Save…", command=self.save_design)
+        file_menu.add_command(label="Open…", command=self.open_design)
+        menu.add_cascade(label="File", menu=file_menu)
+        self.config(menu=menu)
         header = ttk.Frame(self, padding=(20, 14))
         header.pack(fill="x")
         ttk.Label(header, text="Beam Designer", style="Title.TLabel").pack(side="left")
@@ -502,6 +589,68 @@ class BeamDesigner(tk.Tk):
         self.allowable_var.set("")
         self.divisor_var.set("360")
         self.add_load("udl", {"magnitude": 1, "start": 0, "end": 20, "class": "Live"})
+        self.calculate()
+
+    def save_design(self) -> None:
+        try:
+            inputs = self.read_inputs()
+            solve(inputs)
+            document = design_document(inputs)
+        except (ValueError, OverflowError, ZeroDivisionError) as exc:
+            messagebox.showerror("Cannot save design", str(exc), parent=self)
+            return
+        path = filedialog.asksaveasfilename(parent=self, title="Save beam design",
+                                           defaultextension=".json",
+                                           filetypes=[("Beam design", "*.json"), ("All files", "*.*")])
+        if not path:
+            return
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=os.path.dirname(os.path.abspath(path)),
+                                             prefix=".beam-", suffix=".tmp", delete=False) as handle:
+                temporary = handle.name
+                json.dump(document, handle, indent=2, allow_nan=False)
+                handle.write("\n")
+            os.replace(temporary, path)
+            temporary = None
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Cannot save design", str(exc), parent=self)
+            return
+        finally:
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
+
+    def open_design(self) -> None:
+        path = filedialog.askopenfilename(parent=self, title="Open beam design",
+                                          filetypes=[("Beam design", "*.json"), ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as handle:
+                inputs = read_design(json.load(handle))
+        except (OSError, UnicodeError, ValueError, OverflowError, ZeroDivisionError, RecursionError) as exc:
+            messagebox.showerror("Cannot open design", str(exc), parent=self)
+            return
+        for child in self.load_rows_frame.winfo_children():
+            child.destroy()
+        self.loads.clear()
+        self.support_var.set("Simply supported" if inputs["support"] == "simple" else "Cantilever")
+        self.span_var.set(str(inputs["span"]))
+        self.shape_var.set(inputs["shape_name"])
+        self.self_weight_var.set(inputs["include_self_weight"])
+        self.allowable_var.set("" if inputs["allowable"] is None else str(inputs["allowable"]))
+        self.divisor_var.set(str(inputs["divisor"]))
+        for load in inputs["loads"]:
+            defaults = {"class": load.load_class.title(), "magnitude": load.magnitude}
+            if load.kind == "point":
+                defaults["position"] = load.position
+            else:
+                defaults.update(start=load.start, end=load.end)
+            self.add_load(load.kind, defaults)
+        self.draw_section()
         self.calculate()
 
     def mark_stale(self) -> None:
